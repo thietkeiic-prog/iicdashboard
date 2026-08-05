@@ -67,6 +67,32 @@
   .table-title{font-size:13px; font-weight:600; color:var(--ink-soft); padding:16px 20px 0;}
   .table-wrap{padding:12px 20px 20px;}
   canvas{max-height:300px;}
+
+  .summary-row{display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:20px;}
+  @media(max-width:800px){.summary-row{grid-template-columns:repeat(2,1fr);}}
+  .summary-card{background:var(--card); border:0.5px solid var(--line); border-radius:10px; padding:12px 14px;}
+  .summary-card .label{font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px;}
+  .summary-card .value{font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:500;}
+
+  .target-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:14px;}
+  @media(max-width:800px){.target-grid{grid-template-columns:1fr;}}
+  .target-item{border:0.5px solid var(--line); border-radius:10px; padding:12px 14px;}
+  .target-item .t-label{font-size:12px; color:var(--ink-soft); margin-bottom:6px; display:flex; justify-content:space-between; gap:8px;}
+  .target-item .t-nums{font-family:'IBM Plex Mono',monospace; font-size:13px; margin-bottom:6px;}
+  .target-edit{display:flex; gap:6px; margin-top:8px;}
+  .target-edit input{flex:1; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:5px 7px; border-radius:5px; border:1px solid var(--line); background:var(--paper);}
+  .target-edit button{font-size:11px; font-weight:600; padding:5px 9px; border-radius:5px; border:none; background:var(--ink); color:var(--card); cursor:pointer;}
+
+  .target-item > input{width:100%; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:5px 7px; border-radius:5px; border:1px solid var(--line); background:var(--paper); margin-top:6px;}
+  .brand-target-list{margin-top:12px; padding-top:10px; border-top:0.5px dashed var(--line); display:flex; flex-direction:column; gap:8px;}
+  .brand-target-row .bt-top{display:flex; justify-content:space-between; font-size:11px; margin-bottom:3px; gap:6px;}
+  .brand-target-row .bt-top span:first-child{display:flex; align-items:center; gap:5px;}
+  .brand-target-row .bt-top span:last-child{font-family:'IBM Plex Mono',monospace; color:var(--ink-soft); white-space:nowrap;}
+  .brand-target-row input{width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px; padding:4px 6px; border-radius:5px; border:1px solid var(--line); background:var(--paper); margin-top:4px;}
+
+  .edit-row input, .edit-row select{font-family:'Be Vietnam Pro',sans-serif; font-size:12px; padding:4px 6px; border-radius:5px; border:1px solid var(--line); background:var(--paper); width:100%;}
+  .row-actions{display:flex; gap:4px; justify-content:center;}
+  .row-actions button{background:none; border:none; cursor:pointer; color:var(--ink-soft); font-size:13px;}
 </style>
 </head>
 <body>
@@ -86,6 +112,8 @@
     </div>
   </div>
 
+  <div class="summary-row" id="summaryRow"></div>
+
   <div class="grid">
     <div class="card">
       <div class="tabs" id="tabs"></div>
@@ -98,6 +126,10 @@
       <div class="card">
         <div class="card-title">📦 Tỷ trọng theo brand</div>
         <div id="breakdown"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🎯 Target tháng · quý · năm</div>
+        <div class="target-grid" id="targetGrid"></div>
       </div>
       <div class="card" id="entryCard">
         <div class="card-title">Thêm mục doanh số</div>
@@ -138,6 +170,7 @@ const PERIODS = [
 const LAST_N = { day: 14, week: 12, month: 12, quarter: 8, year: 6 };
 
 let records = [];
+let targets = [];
 let period = 'day';
 let chart = null;
 let session = null;
@@ -184,13 +217,24 @@ supabaseClient
   .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_records' }, () => loadRecords())
   .subscribe();
 
+async function loadTargets(){
+  const { data, error } = await supabaseClient.from('sales_targets').select('*');
+  if (!error) targets = data;
+  render();
+}
+
+supabaseClient
+  .channel('sales_targets_changes')
+  .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_targets' }, () => loadTargets())
+  .subscribe();
+
 /* ---------------- Đăng nhập admin ---------------- */
 async function initAuth(){
   const { data } = await supabaseClient.auth.getSession();
   session = data.session;
   renderAuthbar();
 }
-supabaseClient.auth.onAuthStateChange((_event, s) => { session = s; renderAuthbar(); renderEntryForm(); });
+supabaseClient.auth.onAuthStateChange((_event, s) => { session = s; renderAuthbar(); render(); });
 
 function renderAuthbar(){
   const bar = document.getElementById('authbar');
@@ -245,6 +289,42 @@ function renderEntryForm(){
 async function removeRecord(id){
   if (!session) return;
   await supabaseClient.from('sales_records').delete().eq('id', id);
+}
+
+let editingId = null;
+function startEdit(id){ editingId = id; renderTable(); }
+function cancelEdit(){ editingId = null; renderTable(); }
+
+async function saveEdit(id){
+  const date = document.getElementById(`e-date-${id}`).value;
+  const category = document.getElementById(`e-cat-${id}`).value;
+  const revenue = Number(document.getElementById(`e-rev-${id}`).value);
+  if (!date || !revenue || revenue <= 0) { alert('Ngày hoặc doanh số không hợp lệ.'); return; }
+  const { error } = await supabaseClient.from('sales_records').update({ date, category, revenue }).eq('id', id);
+  if (error) { alert('Lỗi cập nhật: ' + error.message); return; }
+  editingId = null;
+}
+
+/* ---------------- Target: tháng / quý / năm ---------------- */
+function currentPeriodKey(type){
+  const todayStr = new Date().toISOString().slice(0,10);
+  return periodInfo(todayStr, type).key;
+}
+
+async function saveTargetGroup(type, key){
+  if (!session) return;
+  const entries = [];
+  const totalInput = document.getElementById(`target-input-${type}-total`);
+  if (totalInput && totalInput.value) entries.push({ period_type: type, period_key: key, category: 'total', target: Number(totalInput.value) });
+  CATEGORIES.forEach(c => {
+    const el = document.getElementById(`target-input-${type}-${c.id}`);
+    if (el && el.value) entries.push({ period_type: type, period_key: key, category: c.id, target: Number(el.value) });
+  });
+  if (!entries.length) return;
+  const { error } = await supabaseClient
+    .from('sales_targets')
+    .upsert(entries, { onConflict: 'period_type,period_key,category' });
+  if (error) alert('Lỗi lưu target: ' + error.message);
 }
 
 /* ---------------- Render biểu đồ / bảng ---------------- */
@@ -329,14 +409,102 @@ function renderTable(){
     <thead><tr><th>Ngày</th><th>Brand</th><th style="text-align:right">Doanh số</th><th></th></tr></thead>
     <tbody>${sorted.map(r => {
       const cat = CATEGORIES.find(c => c.id === r.category) || { name: r.category, color: '#999' };
+      if (session && editingId === r.id){
+        return `<tr class="edit-row">
+          <td><input type="date" id="e-date-${r.id}" value="${r.date}" /></td>
+          <td><select id="e-cat-${r.id}">${CATEGORIES.map(c => `<option value="${c.id}" ${c.id===r.category?'selected':''}>${c.name}</option>`).join('')}</select></td>
+          <td><input type="number" id="e-rev-${r.id}" value="${r.revenue}" /></td>
+          <td class="row-actions">
+            <button onclick="saveEdit(${r.id})" title="Lưu">💾</button>
+            <button onclick="cancelEdit()" title="Hủy">✖️</button>
+          </td>
+        </tr>`;
+      }
       return `<tr>
         <td>${new Date(r.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
         <td><span class="cat-cell"><span class="dot" style="background:${cat.color}"></span>${cat.name}</span></td>
         <td class="amount">${formatVND(r.revenue)}</td>
-        <td style="text-align:center">${session ? `<button class="del" onclick="removeRecord(${r.id})">🗑</button>` : ''}</td>
+        <td class="row-actions">${session ? `<button onclick="startEdit(${r.id})" title="Sửa">✏️</button><button onclick="removeRecord(${r.id})" title="Xóa">🗑</button>` : ''}</td>
       </tr>`;
     }).join('')}</tbody>
   </table>`;
+}
+
+function renderSummaryRow(){
+  const todayStr = new Date().toISOString().slice(0,10);
+  const buckets = [
+    { type: 'day', label: 'Hôm nay' },
+    { type: 'week', label: 'Tuần này' },
+    { type: 'month', label: 'Tháng này' },
+    { type: 'quarter', label: 'Quý này' },
+    { type: 'year', label: 'Năm này' },
+  ];
+  const currentKeys = {};
+  buckets.forEach(b => currentKeys[b.type] = periodInfo(todayStr, b.type).key);
+  const sums = {}; buckets.forEach(b => sums[b.type] = 0);
+  records.forEach(r => {
+    buckets.forEach(b => {
+      if (periodInfo(r.date, b.type).key === currentKeys[b.type]) sums[b.type] += Number(r.revenue);
+    });
+  });
+  document.getElementById('summaryRow').innerHTML = buckets.map(b => `
+    <div class="summary-card">
+      <div class="label">${b.label}</div>
+      <div class="value">${formatVND(sums[b.type])}</div>
+    </div>
+  `).join('');
+}
+
+function renderTargetGrid(){
+  const types = [
+    { type: 'month', label: 'Tháng này' },
+    { type: 'quarter', label: 'Quý này' },
+    { type: 'year', label: 'Năm này' },
+  ];
+  const todayStr = new Date().toISOString().slice(0,10);
+
+  function getTarget(type, key, cat){
+    const row = targets.find(x => x.period_type === type && x.period_key === key && x.category === cat);
+    return row ? Number(row.target) : 0;
+  }
+  function getActual(type, key, cat){
+    return records.reduce((sum, r) => {
+      if (periodInfo(r.date, type).key !== key) return sum;
+      if (cat !== 'total' && r.category !== cat) return sum;
+      return sum + Number(r.revenue);
+    }, 0);
+  }
+
+  document.getElementById('targetGrid').innerHTML = types.map(t => {
+    const key = periodInfo(todayStr, t.type).key;
+    const totalTarget = getTarget(t.type, key, 'total');
+    const totalActual = getActual(t.type, key, 'total');
+    const totalPct = totalTarget > 0 ? Math.min(100, (totalActual/totalTarget)*100) : 0;
+
+    const brandRows = CATEGORIES.map(c => {
+      const target = getTarget(t.type, key, c.id);
+      const actual = getActual(t.type, key, c.id);
+      const pct = target > 0 ? Math.min(100, (actual/target)*100) : 0;
+      const editInput = session ? `<input type="number" min="0" id="target-input-${t.type}-${c.id}" placeholder="${target>0?target:'target'}" />` : '';
+      return `<div class="brand-target-row">
+        <div class="bt-top"><span><span class="dot" style="background:${c.color}"></span>${c.name}</span><span>${formatVND(actual)}${target>0? ' / '+formatVND(target):''}</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${c.color}"></div></div>
+        ${editInput}
+      </div>`;
+    }).join('');
+
+    const overallEdit = session ? `<input type="number" min="0" id="target-input-${t.type}-total" placeholder="${totalTarget>0?totalTarget:'Target tổng'}" />` : '';
+    const saveBtn = session ? `<button class="btn" style="margin-top:10px;" onclick="saveTargetGroup('${t.type}','${key}')">Lưu target</button>` : '';
+
+    return `<div class="target-item">
+      <div class="t-label"><span>${t.label}</span><span>${totalTarget>0?totalPct.toFixed(0)+'%':''}</span></div>
+      <div class="t-nums">${formatVND(totalActual)}${totalTarget>0?' / '+formatVND(totalTarget):' <span style="color:var(--ink-soft)">(chưa đặt target tổng)</span>'}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${totalPct}%; background:${totalTarget>0?'#4C8B5A':'transparent'}"></div></div>
+      ${overallEdit}
+      <div class="brand-target-list">${brandRows}</div>
+      ${saveBtn}
+    </div>`;
+  }).join('');
 }
 
 function render(){
@@ -344,12 +512,15 @@ function render(){
   renderChart();
   renderLegend();
   renderBreakdown();
+  renderSummaryRow();
+  renderTargetGrid();
   renderTable();
   renderEntryForm();
 }
 
 initAuth();
 loadRecords();
+loadTargets();
 </script>
 </body>
 </html>
